@@ -50,6 +50,7 @@ async function supabaseInsert(table: string, rows: Record<string, unknown>[]) {
 }
 
 async function startServer() {
+  console.log(`[STARTUP] PORT env = ${process.env.PORT ?? '(no establecido, default 3000)'}`)
   console.log('[STARTUP] Loading playwright module...')
 
   // Dynamic require so any load error is caught by unhandledRejection above
