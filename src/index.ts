@@ -1,8 +1,6 @@
 import express from 'express'
+import { scrapeGoogleMaps } from './scrapers/google-maps'
 
-// CRITICAL: register BEFORE any require() that might fail
-// Static imports (like express above) are compiled first, but express is safe.
-// playwright is loaded dynamically below so errors are caught here.
 process.on('uncaughtException', (err) => {
   console.error('[CRASH] uncaughtException:', err.message, err.stack)
   process.exit(1)
@@ -17,10 +15,12 @@ const API_KEY      = process.env.SCRAPER_API_KEY ?? ''
 const SUPABASE_URL = process.env.SUPABASE_URL ?? ''
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ?? ''
 
+console.log(`[STARTUP] prospecta-scraper iniciando en puerto ${PORT}`)
+console.log(`[STARTUP] GOOGLE_PLACES_API_KEY: ${process.env.GOOGLE_PLACES_API_KEY ? 'OK' : 'FALTA'}`)
+
 async function supabaseUpdate(table: string, id: string, data: Record<string, unknown>) {
-  const url = `${SUPABASE_URL}/rest/v1/${table}?id=eq.${id}`
-  await fetch(url, {
-    method: 'PATCH',
+  await fetch(`${SUPABASE_URL}/rest/v1/${table}?id=eq.${id}`, {
+    method:  'PATCH',
     headers: {
       'Content-Type':  'application/json',
       'apikey':        SUPABASE_KEY,
@@ -32,9 +32,8 @@ async function supabaseUpdate(table: string, id: string, data: Record<string, un
 }
 
 async function supabaseInsert(table: string, rows: Record<string, unknown>[]) {
-  const url = `${SUPABASE_URL}/rest/v1/${table}`
-  const res = await fetch(url, {
-    method: 'POST',
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+    method:  'POST',
     headers: {
       'Content-Type':  'application/json',
       'apikey':        SUPABASE_KEY,
@@ -43,121 +42,97 @@ async function supabaseInsert(table: string, rows: Record<string, unknown>[]) {
     },
     body: JSON.stringify(rows),
   })
-  if (!res.ok) {
-    const err = await res.text()
-    throw new Error(`Supabase insert error: ${err}`)
-  }
+  if (!res.ok) throw new Error(`Supabase insert error: ${await res.text()}`)
 }
 
-async function startServer() {
-  console.log(`[STARTUP] PORT env = ${process.env.PORT ?? '(no establecido, default 3000)'}`)
-  console.log('[STARTUP] Loading playwright module...')
+const app = express()
+app.use(express.json())
 
-  // Dynamic require so any load error is caught by unhandledRejection above
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { scrapeGoogleMaps } = require('./scrapers/google-maps') as typeof import('./scrapers/google-maps')
+app.use((req, res, next) => {
+  if (req.path === '/health') return next()
+  const key = req.headers['x-api-key']
+  if (!API_KEY || key !== API_KEY) {
+    res.status(401).json({ error: 'API key inválida' })
+    return
+  }
+  next()
+})
 
-  console.log('[STARTUP] Playwright loaded, starting Express...')
+app.get('/health', (_req, res) => {
+  res.json({ ok: true, service: 'prospecta-scraper' })
+})
 
-  const app = express()
-  app.use(express.json())
+app.post('/google-maps', async (req, res) => {
+  const { query, ciudad, pais, workspace_id, search_id } = req.body as {
+    query: string; ciudad: string; pais: string; workspace_id: string; search_id: string
+  }
 
-  // Auth middleware
-  app.use((req, res, next) => {
-    if (req.path === '/health') return next()
-    const key = req.headers['x-api-key']
-    if (!API_KEY || key !== API_KEY) {
-      res.status(401).json({ error: 'API key inválida' })
-      return
-    }
-    next()
-  })
+  if (!query || !ciudad || !workspace_id || !search_id) {
+    return void res.status(400).json({ error: 'query, ciudad, workspace_id y search_id son requeridos' })
+  }
 
-  app.get('/health', (_req, res) => {
-    res.json({ ok: true, service: 'prospecta-scraper' })
-  })
+  res.json({ ok: true, search_id, message: 'Búsqueda iniciada' })
 
-  app.post('/google-maps', async (req, res) => {
-    const { query, ciudad, pais, workspace_id, search_id } = req.body as {
-      query:        string
-      ciudad:       string
-      pais:         string
-      workspace_id: string
-      search_id:    string
-    }
+  ;(async () => {
+    try {
+      console.log(`[google-maps] Iniciando: "${query}" en ${ciudad}, ${pais}`)
+      await supabaseUpdate('prospect_searches', search_id, { estado: 'buscando' })
 
-    if (!query || !ciudad || !workspace_id || !search_id) {
-      return void res.status(400).json({ error: 'query, ciudad, workspace_id y search_id son requeridos' })
-    }
+      const empresas = await scrapeGoogleMaps(query, ciudad)
+      console.log(`[google-maps] Encontradas: ${empresas.length} empresas`)
 
-    res.json({ ok: true, search_id, message: 'Búsqueda iniciada' })
-
-    ;(async () => {
-      try {
-        console.log(`[google-maps] Iniciando búsqueda: "${query}" en ${ciudad}, ${pais}`)
-
-        await supabaseUpdate('prospect_searches', search_id, { estado: 'buscando' })
-
-        const empresas = await scrapeGoogleMaps(query, ciudad)
-
-        console.log(`[google-maps] Encontradas: ${empresas.length} empresas`)
-
-        if (!empresas.length) {
-          await supabaseUpdate('prospect_searches', search_id, {
-            estado:        'error',
-            error_message: 'No se encontraron empresas para este sector y ciudad',
-          })
-          return
-        }
-
-        const rows = empresas.map((e, i) => ({
-          workspace_id,
-          nombre:               'Por identificar',
-          empresa:              e.nombre,
-          cargo:                'Decisor',
-          ciudad,
-          nivel_encaje:         'Medio',
-          nivel_decision:       'Medio',
-          motivo_encaje:        `Empresa real encontrada en Google Maps. ${e.rating ? `Rating: ${e.rating}` : ''}${e.reseñas ? ` (${e.reseñas} reseñas)` : ''}`.trim(),
-          dolor_visible:        'Por analizar con A6',
-          servicio_recomendado: 'Por analizar con A6',
-          objecion_probable:    '',
-          respuesta_objecion:   '',
-          angulo_mensaje:       `${e.nombre}${e.direccion ? ` — ${e.direccion}` : ''}`,
-          canal_recomendado:    e.telefono ? 'whatsapp' : 'email',
-          fuente:               'web',
-          prioridad:            i + 1,
-          notas: [
-            e.web       && `Web: ${e.web}`,
-            e.telefono  && `Tel: ${e.telefono}`,
-            e.direccion && `Dir: ${e.direccion}`,
-            e.rating    && `Rating: ${e.rating}${e.reseñas ? ` (${e.reseñas} reseñas)` : ''}`,
-            e.categoria && `Categoría: ${e.categoria}`,
-          ].filter(Boolean).join('\n') || null,
-        }))
-
-        await supabaseInsert('prospects', rows)
-
-        await supabaseUpdate('prospect_searches', search_id, {
-          estado:                 'completado',
-          prospectos_encontrados: empresas.length,
-        })
-
-        console.log(`[google-maps] Job completado: ${empresas.length} prospectos insertados`)
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : 'Error desconocido'
-        console.error(`[google-maps] Error en job:`, msg)
+      if (!empresas.length) {
         await supabaseUpdate('prospect_searches', search_id, {
           estado:        'error',
-          error_message: msg,
-        }).catch(() => {})
+          error_message: 'Sin resultados para este sector y ciudad',
+        })
+        return
       }
-    })()
-  })
 
-  app.listen(PORT, () => {
-    console.log(`prospecta-scraper corriendo en puerto ${PORT}`)
-  })
-}
+      const rows = empresas.map((e, i) => ({
+        workspace_id,
+        nombre:               'Por identificar',
+        empresa:              e.nombre,
+        cargo:                'Decisor',
+        ciudad,
+        nivel_encaje:         'Medio',
+        nivel_decision:       'Medio',
+        motivo_encaje:        `Empresa real de Google Maps.${e.rating ? ` Rating: ${e.rating}` : ''}${e.reseñas ? ` (${e.reseñas} reseñas)` : ''}`,
+        dolor_visible:        'Por analizar con A6',
+        servicio_recomendado: 'Por analizar con A6',
+        objecion_probable:    '',
+        respuesta_objecion:   '',
+        angulo_mensaje:       `${e.nombre}${e.direccion ? ` — ${e.direccion}` : ''}`,
+        canal_recomendado:    e.telefono ? 'whatsapp' : 'email',
+        fuente:               'web',
+        prioridad:            i + 1,
+        notas: [
+          e.web       && `Web: ${e.web}`,
+          e.telefono  && `Tel: ${e.telefono}`,
+          e.direccion && `Dir: ${e.direccion}`,
+          e.rating    && `Rating: ${e.rating}${e.reseñas ? ` (${e.reseñas} reseñas)` : ''}`,
+          e.categoria && `Categoría: ${e.categoria}`,
+        ].filter(Boolean).join('\n') || null,
+      }))
 
-startServer()
+      await supabaseInsert('prospects', rows)
+      await supabaseUpdate('prospect_searches', search_id, {
+        estado:                 'completado',
+        prospectos_encontrados: empresas.length,
+      })
+
+      console.log(`[google-maps] Completado: ${empresas.length} prospectos insertados`)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Error desconocido'
+      console.error(`[google-maps] Error:`, msg)
+      await supabaseUpdate('prospect_searches', search_id, {
+        estado:        'error',
+        error_message: msg,
+      }).catch(() => {})
+    }
+  })()
+})
+
+app.listen(PORT, () => {
+  console.log(`prospecta-scraper corriendo en puerto ${PORT}`)
+})
