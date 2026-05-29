@@ -2,6 +2,15 @@ import express from 'express'
 import { scrapeGoogleMaps } from './scrapers/google-maps'
 import type { ErrorResponse } from './types'
 
+// Log crashes para debugging en Railway
+process.on('uncaughtException', (err) => {
+  console.error('[CRASH] uncaughtException:', err)
+  process.exit(1)
+})
+process.on('unhandledRejection', (reason) => {
+  console.error('[CRASH] unhandledRejection:', reason)
+})
+
 const app     = express()
 const PORT    = Number(process.env.PORT ?? 3000)
 const API_KEY = process.env.SCRAPER_API_KEY ?? ''
