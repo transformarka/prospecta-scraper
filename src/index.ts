@@ -45,8 +45,25 @@ async function supabaseInsert(table: string, rows: Record<string, unknown>[]) {
   if (!res.ok) throw new Error(`Supabase insert error: ${await res.text()}`)
 }
 
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ?? '')
+  .split(',').map(s => s.trim()).filter(Boolean)
+
 const app = express()
 app.use(express.json())
+
+// CORS con allowlist explícita. El API real está protegido por x-api-key
+// (server-to-server), esto solo controla qué orígenes de navegador pueden llamar.
+app.use((req, res, next) => {
+  const origin = req.headers.origin
+  if (origin && ALLOWED_ORIGINS.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin)
+    res.setHeader('Vary', 'Origin')
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key')
+  }
+  if (req.method === 'OPTIONS') return void res.sendStatus(204)
+  next()
+})
 
 app.use((req, res, next) => {
   if (req.path === '/health') return next()
