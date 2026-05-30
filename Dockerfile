@@ -3,7 +3,7 @@ FROM node:20-alpine
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm ci --no-cache
+RUN npm install --prefer-offline=false
 
 COPY tsconfig.json ./
 COPY src ./src
