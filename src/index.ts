@@ -106,31 +106,42 @@ app.post('/google-maps', async (req, res) => {
         return
       }
 
-      const rows = empresas.map((e, i) => ({
-        workspace_id,
-        nombre:               'Por identificar',
-        empresa:              e.nombre,
-        cargo:                'Decisor',
-        ciudad,
-        nivel_encaje:         'Medio',
-        nivel_decision:       'Medio',
-        motivo_encaje:        `Empresa real de Google Maps.${e.rating ? ` Rating: ${e.rating}` : ''}${e.reseñas ? ` (${e.reseñas} reseñas)` : ''}`,
-        dolor_visible:        'Por analizar con A6',
-        servicio_recomendado: 'Por analizar con A6',
-        objecion_probable:    '',
-        respuesta_objecion:   '',
-        angulo_mensaje:       `${e.nombre}${e.direccion ? ` — ${e.direccion}` : ''}`,
-        canal_recomendado:    e.telefono ? 'whatsapp' : 'email',
-        telefono:             e.telefono ?? null,
-        website:              e.web ?? null,
-        fuente:               'web',
-        prioridad:            i + 1,
-        notas: [
-          e.direccion && `Dir: ${e.direccion}`,
-          e.rating    && `Rating: ${e.rating}${e.reseñas ? ` (${e.reseñas} reseñas)` : ''}`,
-          e.categoria && `Categoría: ${e.categoria}`,
-        ].filter(Boolean).join('\n') || null,
-      }))
+      const rows = empresas.map((e, i) => {
+        const nReseñas = Number(e.reseñas ?? 0)
+
+        // FIX 4 — nivel_encaje según datos reales
+        const nivel_encaje =
+          e.web && e.telefono && nReseñas > 50 ? 'Alto'
+          : (e.web || e.telefono || nReseñas > 0) ? 'Medio'
+          : 'Bajo'
+
+        return {
+          workspace_id,
+          nombre:               'Por identificar',
+          empresa:              e.nombre,
+          cargo:                'Decisor',
+          ciudad,
+          nivel_encaje,                                            // FIX 4
+          nivel_decision:       'Medio',
+          motivo_encaje:        `Empresa real de Google Maps.${e.rating ? ` Rating: ${e.rating}` : ''}${e.reseñas ? ` (${e.reseñas} reseñas)` : ''}`,
+          dolor_visible:        null,   // lo llenará A6
+          servicio_recomendado: null,   // lo llenará A6
+          objecion_probable:    '',
+          respuesta_objecion:   '',
+          angulo_mensaje:       e.señales_encontradas ? `${e.nombre}: ${e.señales_encontradas}` : null,
+          canal_recomendado:    e.telefono ? 'whatsapp' : 'email',
+          telefono:             e.telefono ?? null,   // FIX 1
+          website:              e.web ?? null,         // FIX 1
+          fuente:               'web',
+          prioridad:            i + 1,
+          notas: [
+            e.rating    && `Rating: ${e.rating} (${e.reseñas} reseñas)`,
+            e.direccion && `Dir: ${e.direccion}`,
+            e.categoria && e.categoria !== 'airport' && `Categoría: ${e.categoria}`,
+            e.horario   && `Horario: ${e.horario}`,   // FIX 2
+          ].filter(Boolean).join('\n') || null,
+        }
+      })
 
       await supabaseInsert('prospects', rows)
       await supabaseUpdate('prospect_searches', search_id, {
