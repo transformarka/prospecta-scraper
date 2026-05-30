@@ -104,11 +104,11 @@ app.post('/google-maps', async (req, res) => {
         respuesta_objecion:   '',
         angulo_mensaje:       `${e.nombre}${e.direccion ? ` — ${e.direccion}` : ''}`,
         canal_recomendado:    e.telefono ? 'whatsapp' : 'email',
+        telefono:             e.telefono ?? null,
+        website:              e.web ?? null,
         fuente:               'web',
         prioridad:            i + 1,
         notas: [
-          e.web       && `Web: ${e.web}`,
-          e.telefono  && `Tel: ${e.telefono}`,
           e.direccion && `Dir: ${e.direccion}`,
           e.rating    && `Rating: ${e.rating}${e.reseñas ? ` (${e.reseñas} reseñas)` : ''}`,
           e.categoria && `Categoría: ${e.categoria}`,
